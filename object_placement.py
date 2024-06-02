@@ -14,6 +14,7 @@ import math
 import random
 import os
 import sys
+import contextlib
 from argparse import ArgumentParser
 
 import einops
@@ -26,6 +27,7 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image, ImageOps
 from torch import autocast
+from tqdm import tqdm
 
 sys.path.append("./stable_diffusion")
 
@@ -95,7 +97,7 @@ def load_model_from_config(config, ckpt, vae_ckpt=None, verbose=False):
 
 
 def get_data(data_path: str) -> pd.DataFrame:
-    # Expected columns: ["bg_image_path", "object_to_add"]
+    # Expected columns: ["bg_image_path", "object_to_add", "filename"]
     data = pd.read_csv(data_path)
     return data
 
@@ -116,8 +118,8 @@ def get_images_ids(data):
 
 def get_args(args):
     parser = ArgumentParser()
-    parser.add_argument("--data-path", required=True, type=str)
-    parser.add_argument("--output-path", required=True, type=str)
+    parser.add_argument("--data_path", required=True, type=str)
+    parser.add_argument("--output_dir", required=True, type=str)
     parser.add_argument("--resolution", default=512, type=int)
     parser.add_argument("--steps", default=100, type=int)
     parser.add_argument("--config", default="configs/generate.yaml", type=str)
@@ -140,11 +142,16 @@ def main():
     seed = random.randint(0, 100000) if args.seed is None else args.seed
     data = get_data(args.data_path)
     bg_images = preprocess_images(data["bg_image_path"].to_list(), args.resolution)
-    images_ids = get_images_ids(data)
-    with torch.no_grad(), autocast("cuda"), model.ema_scope():
+    with torch.no_grad(), autocast(
+        "cuda"
+    ), model.ema_scope(), contextlib.redirect_stdout(None):
         cond = {}
-        for bg_image, image_id, object_to_add in zip(
-            bg_images, images_ids, data["object_to_add"].to_list()
+        for bg_image, object_to_add, filename in tqdm(
+            zip(
+                bg_images,
+                data["object_to_add"].to_list(),
+                data["filename"].to_list(),
+            )
         ):
             edit = f"add a {object_to_add}, image quality is five out of five"
             cond["c_crossattn"] = [model.get_learned_conditioning([edit])]
@@ -173,7 +180,7 @@ def main():
             x = torch.clamp((x + 1.0) / 2.0, min=0.0, max=1.0)
             x = 255.0 * rearrange(x, "1 c h w -> h w c")
             edited_image = Image.fromarray(x.type(torch.uint8).cpu().numpy())
-            edited_image.save(f"{args.output_path}/{image_id}_{object_to_add}.png")
+            edited_image.save(os.path.join(args.output_dir, f"{filename}.png"))
 
 
 if __name__ == "__main__":
